@@ -16,13 +16,15 @@ import {
 
 import { streamToRx } from "rxjs-stream";
 import { JsxEmit } from "typescript";
+import { createWriteStream } from "fs";
+import { PrismaClient } from "@prisma/client";
 
 interface Measurement {
   device_id: number;
   sensor_index: number;
   sensor_value: number;
   battery_value: number;
-  timestamp?: number;
+  timestamp?: Date;
 }
 
 const bufferBySensorIndex = () => (source$: Observable<Measurement>) => {
@@ -38,19 +40,25 @@ const bufferBySensorIndex = () => (source$: Observable<Measurement>) => {
   );
 };
 
-const port = new SerialPortStream(
-  { binding, path: "COM6", baudRate: 9600 },
-  console.log
-);
-const parser = port.pipe(new ReadlineParser({ delimiter: "\r\n" }));
-const port$ = streamToRx(parser);
+const listenToPort = (path: `COM${number}`) => {
+  const port = new SerialPortStream(
+    { binding, path, baudRate: 9600 },
+    console.log
+  );
+  const parser = port.pipe(new ReadlineParser({ delimiter: "\r\n" }));
+  const port$ = streamToRx(parser);
 
-port$
-  .pipe(
-    tap(console.log),
+  return port$.pipe(
     map((val) => val.toString().trim()),
     map((s) => JSON.parse(s) as Measurement),
-    map(m => ({...m, timestamp: Date.now()})),
-    bufferBySensorIndex()
-  )
-  .subscribe(console.log);
+    map((m) => ({ ...m, timestamp: new Date() }))
+  );
+};
+
+const prisma = new PrismaClient();
+
+(async () => {
+  for (const path of ["COM6", "COM7", "COM10"] as const) {
+    listenToPort(path).subscribe(async (m) => await prisma.measurement.create({ data: m }));
+  }
+})().catch(() => prisma.$disconnect());
