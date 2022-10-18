@@ -13,15 +13,13 @@ import {
   interval,
   ObjectUnsubscribedError,
   zip,
+  merge,
 } from "rxjs";
 
-import {slo, rot, COM_PORTS, outfile} from "./cfg"
+import { slo, rot, COM_PORTS, outfile } from "./cfg";
 
 import { streamToRx } from "rxjs-stream";
-import { JsxEmit } from "typescript";
 import { createWriteStream } from "fs";
-import { PrismaClient } from "@prisma/client";
-import { stdout } from "process";
 
 import "dotenv/config";
 
@@ -36,8 +34,8 @@ interface Measurement {
 type FlatMeasurement = {
   [key: `${number}_${number}_${"value" | "time"}`]: number;
 } & {
-  [key in `${'slo' | 'rot'}`]: 0 | 1
-}
+  [key in `${"slo" | "rot"}`]: 0 | 1;
+};
 
 const bufferBySensorIndex = () => (source$: Observable<Measurement>) => {
   const reset_buffer$ = source$.pipe(
@@ -70,20 +68,26 @@ const listenToPort = (path: `COM${number}`) => {
 const out = createWriteStream(`./data/${outfile}.log`);
 // const out = stdout;
 
-const ports = COM_PORTS.map(listenToPort);
-const buffered = ports.map((port) => port.pipe(bufferBySensorIndex()));
-const combined = zip(...buffered).pipe(
-  map((grid) =>
-    grid.flat().reduce<FlatMeasurement>(
-      (acc, m) => ({
-        ...acc,
-        [`${m.device_id}_${m.sensor_index}_value`]: m.sensor_value,
-        [`${m.device_id}_${m.sensor_index}_time`]: m.timestamp,
-      }),
-      {slo, rot}
+const ports = COM_PORTS.map((p) => listenToPort(p));
+
+const listenGroups = () =>
+  zip(...ports.map((p) => p.pipe(bufferBySensorIndex())))
+    .pipe(
+      map((g) =>
+        g
+          .flat()
+          .sort((a, b) => a.sensor_value - b.sensor_value)
+          // .filter(r => r.sensor_value < 100)
+          .map((r) => `${r.device_id}-${r.sensor_index} = ${r.sensor_value}`)
+      )
+      // filter((r) => r.sensor_value < 50),
+      // map((r) => `${r.device_id}-${r.sensor_index} = ${r.sensor_value}`)
     )
-  )
-);
-combined
-  .pipe(map((m) => JSON.stringify(m) + "\n"))
-  .subscribe((s) => out.write(s));
+    .subscribe(console.log);
+
+const listenEach = () =>
+  merge(...ports)
+    .pipe(map((r) => `${r.device_id}-${r.sensor_index} = ${r.sensor_value}`))
+    .subscribe(console.log);
+
+listenGroups();
